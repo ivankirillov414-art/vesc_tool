@@ -6,6 +6,11 @@ on:
     branches: [master]
     paths:
       - '.github/workflows/ios-unsigned.yml'
+      - '**.cpp'
+      - '**.h'
+      - '**.pro'
+      - '**.qml'
+      - 'ios/**'
 
 permissions:
   contents: read
@@ -74,7 +79,7 @@ jobs:
             CONFIG+=build_mobile CONFIG+=exclude_fw CONFIG-=bitcode \
             QMAKE_APPLE_DEVICE_ARCHS=arm64 QMAKE_IOS_DEPLOYMENT_TARGET=13.0
           # Materialize generated sources before Xcode snapshots its dependency graph.
-          make -f 'VESC Tool.xcodeproj/qt_preprocess.mak' -j3
+          make -f 'VESC Tool.xcodeproj/qt_preprocess.mak' -j4
           test -s qrc_res_qml.cpp
           test -s qrc_res_neutral.cpp
           xcodebuild -list -project 'VESC Tool.xcodeproj'
@@ -86,7 +91,7 @@ jobs:
           xcodebuild \
             -project 'build/ios-ci/VESC Tool.xcodeproj' \
             -configuration Release -sdk iphoneos \
-            -jobs 3 \
+            -jobs 4 \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
             IPHONEOS_DEPLOYMENT_TARGET=13.0 \
             ENABLE_BITCODE=NO \

@@ -73,6 +73,10 @@ jobs:
             CONFIG+=release CONFIG-=debug CONFIG+=iphoneos CONFIG-=iphonesimulator \
             CONFIG+=build_mobile CONFIG+=exclude_fw CONFIG-=bitcode \
             QMAKE_APPLE_DEVICE_ARCHS=arm64 QMAKE_IOS_DEPLOYMENT_TARGET=13.0
+          # Materialize generated sources before Xcode snapshots its dependency graph.
+          make -f 'VESC Tool.xcodeproj/qt_preprocess.mak' -j3
+          test -s qrc_res_qml.cpp
+          test -s qrc_res_neutral.cpp
           xcodebuild -list -project 'VESC Tool.xcodeproj'
 
       - name: Compile for iPhone without signing
@@ -88,6 +92,7 @@ jobs:
             ENABLE_BITCODE=NO \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
             DEVELOPMENT_TEAM= \
+            PRODUCT_BUNDLE_IDENTIFIER=com.ivankirillov.controller-tool \
             CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build/ios-product" \
             build 2>&1 | tee build/ios-build.log
 

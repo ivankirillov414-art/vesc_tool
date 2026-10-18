@@ -1,0 +1,131 @@
+name: Build unsigned iPhone IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/ios-unsigned.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-unsigned-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'ivankirillov414-art/vesc_tool'
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode 16.4
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install Qt for iOS
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          host: mac
+          target: ios
+          arch: ios
+          cache: true
+
+      - name: Prepare personal unsigned build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, plistlib, re
+          source = pathlib.Path('vesc_tool.pro').read_text()
+          version = re.search(r'^VT_VERSION\s*=\s*([\d.]+)', source, re.M).group(1)
+          plist = pathlib.Path('ios/Info.plist')
+          info = plistlib.loads(plist.read_bytes())
+          info['CFBundleIdentifier'] = 'com.ivankirillov.controller-tool'
+          info['CFBundleDisplayName'] = 'Controller Tool'
+          info['CFBundleShortVersionString'] = version
+          info['CFBundleVersion'] = os.environ['GITHUB_RUN_NUMBER']
+          info['CFBundleInfoDictionaryVersion'] = '6.0'
+          info['NSBluetoothAlwaysUsageDescription'] = 'Connect to your motor controller over Bluetooth.'
+          info['NSBluetoothPeripheralUsageDescription'] = info['NSBluetoothAlwaysUsageDescription']
+          info['NSLocalNetworkUsageDescription'] = 'Connect to your controller on the local network.'
+          plist.write_bytes(plistlib.dumps(info))
+          # Qt 5.15.2 predates the stricter libc++ headers shipped with modern Xcode.
+          header = pathlib.Path(os.environ['QT_ROOT_DIR']) / 'include/QtCore/qbytearraymatcher.h'
+          if header.exists() and '#include <limits>' not in header.read_text():
+              header.write_text('#include <limits>\n' + header.read_text())
+          PY
+
+      - name: Generate Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios-ci
+          cd build/ios-ci
+          "$QT_ROOT_DIR/bin/qmake" ../../vesc_tool.pro -spec macx-ios-clang \
+            CONFIG+=release CONFIG-=debug CONFIG+=iphoneos CONFIG-=iphonesimulator \
+            CONFIG+=build_mobile CONFIG+=exclude_fw CONFIG-=bitcode \
+            QMAKE_APPLE_DEVICE_ARCHS=arm64 QMAKE_IOS_DEPLOYMENT_TARGET=13.0
+          xcodebuild -list -project 'VESC Tool.xcodeproj'
+
+      - name: Compile for iPhone without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project 'build/ios-ci/VESC Tool.xcodeproj' \
+            -configuration Release -sdk iphoneos \
+            -jobs 3 \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            IPHONEOS_DEPLOYMENT_TARGET=13.0 \
+            ENABLE_BITCODE=NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            DEVELOPMENT_TEAM= \
+            CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build/ios-product" \
+            build 2>&1 | tee build/ios-build.log
+
+      - name: Check and package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$GITHUB_WORKSPACE/build/ios-product/VESC Tool.app"
+          test -d "$APP"
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
+          xcrun lipo -verify_arch arm64 "$APP/$EXECUTABLE"
+          xcrun vtool -show-build "$APP/$EXECUTABLE" | tee build/ios-platform.txt
+          grep -Eq 'platform +IOS$' build/ios-platform.txt
+          /usr/libexec/PlistBuddy -c 'Print :NSBluetoothAlwaysUsageDescription' "$APP/Info.plist"
+          mkdir -p build/ipa/Payload dist
+          ditto "$APP" 'build/ipa/Payload/VESC Tool.app'
+          (cd build/ipa && zip -qry ../../dist/Controller-Tool-unsigned.ipa Payload)
+          shasum -a 256 dist/Controller-Tool-unsigned.ipa > dist/SHA256SUMS.txt
+          printf 'Personal unsigned build from %s\nUpstream: https://github.com/vedderb/vesc_tool\nMotor-controller firmware bundle excluded, as in upstream default configuration.\nNot tested on a physical iPhone or controller. Sign with Sideloadly before installation.\n' "$GITHUB_SHA" > dist/BUILD-INFO.txt
+          git diff > dist/build-changes.patch
+          git archive --format=tar.gz --output=dist/source.tar.gz HEAD
+          cp COPYING dist/ 2>/dev/null || cp LICENSE* dist/
+
+      - name: Upload unsigned IPA and corresponding source
+        uses: actions/upload-artifact@v4
+        with:
+          name: Controller-Tool-iPhone-unsigned
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: |
+            build/ios-build.log
+            build/ios-platform.txt
+          if-no-files-found: ignore
+          retention-days: 7
